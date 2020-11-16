@@ -1,6 +1,5 @@
-﻿Email,FirstName,LastName,Tenant
-fakeuser1@autotest.com,Bob,Fakerson,ADA
-fakeuser2@autotest.com,Bill,,Partners
-kittiah@gmail.com,Matt,Cummins,Partners
-fakeuser4@autotest.com,,Jones,ADA
-bob@bob.com,Bob,Bobson,WMG
+﻿Email,FirstName,LastName,Tenant,GeneratePassword,SkipActivation
+fakeuser11@autotestxyz.com,Bob,Fakerson,ADA,TRUE,TRUE
+fakeuser12@autotestxyz.com,Bill,,Partners,,TRUE
+kittiah+fakeuser13@gmail.com,Ben,Collins,Partners,,
+fakeuser14@autotestxyz.com,,Jones,ADA,TRUE,

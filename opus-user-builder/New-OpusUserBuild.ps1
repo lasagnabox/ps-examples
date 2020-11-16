@@ -184,14 +184,24 @@ Add-Type -AssemblyName System.Web
 # Load the input files, build the hash table for looking up the API definitions
 $userArr = Import-CSV $inputFile -Encoding UTF8
 $apiHash = @{}
-$apiArr = Import-CSV $apiFile -Encoding UTF8 | ForEach {$apiHash.Add($_.TenantName,$_)}
+Import-CSV $apiFile -Encoding UTF8 | ForEach {$apiHash.Add($_.TenantName,$_)}
 
+# Step through each user in the input CSV
 $outArr = ForEach ($user in $userArr) {
+
+  # Check for blank First/Last names in the input file, replace if they exist
+  If ($user.FirstName -eq '' -or $user.LastName -eq '') {
+    $user.FirstName = "$($userTenant.TenantName)User"
+    $user.LastName = $user.Email
+  }
+  # Remove any Diacritics from the names that might cause issues
+  $user.FirstName = Convert-DiacriticCharacters $user.FirstName
+  $user.LastName = Convert-DiacriticCharacters $user.LastName
 
   $outObj = [PSCustomObject] @{
     Email = $user.Email
-    FirstName = ''
-    LastName = ''
+    FirstName = $user.FirstName
+    LastName = $user.LastName
     PreExisting = ''
     PasswordLink = ''
     Status = ''
@@ -219,42 +229,72 @@ $outArr = ForEach ($user in $userArr) {
     # If they don't exist, get on with creating them
     Else {
       $outObj.PreExisting = $false
-      # Check for blank First/Last names in the input file, replace if they exist
-      If ($user.FirstName -eq '' -or $user.LastName -eq '') {
-        $user.FirstName = "$($userTenant.TenantName)User"
-        $user.LastName = $user.Email
-      }
+      
+      # Build the object we need to post for the user creation, with or without credentials depending on the GeneratePassword value for user in CSV
+      If ($user.GeneratePassword) {
+        # Generate a password
+        $userPass = "Z4r~$([System.Web.Security.Membership]::GeneratePassword(8,2))"
+        $userPassURL = New-PWPush -password $userPass
 
-      # Generate a password
-      $userPass = "Z4r~$([System.Web.Security.Membership]::GeneratePassword(8,2))"
-      $userPassURL = New-PWPush -password $userPass
-
-      # Build the object we need to post for the user creation
-      $userOut = [PSCustomObject] @{
-        profile = @{
-          firstName = (Convert-DiacriticCharacters $user.FirstName.Trim())
-          lastName = (Convert-DiacriticCharacters $user.LastName.Trim())
-          email = $user.Email.Trim()
-          login = $user.Email.Trim()
-        }
-        credentials = @{
-          password = @{
-            value = $userpass
+        # Build nested PSCustomObject to convert later
+        $userOut = [PSCustomObject] @{
+          profile = @{
+            firstName = $user.FirstName.Trim()
+            lastName = $user.LastName.Trim()
+            email = $user.Email.Trim()
+            login = $user.Email.Trim()
           }
+          credentials = @{
+            password = @{
+              value = $userpass
+            }
+          }
+          groupIds = @($userTenant.OpusGroupId)
         }
-        groupIds = @($userTenant.OpusGroupId)
+      }
+      Else {
+        # Build nested PSCustomObject to convert later
+        $userOut = [PSCustomObject] @{
+          profile = @{
+            firstName = $user.FirstName.Trim()
+            lastName = $user.LastName.Trim()
+            email = $user.Email.Trim()
+            login = $user.Email.Trim()
+          }
+          groupIds = @($userTenant.OpusGroupId)
+        }
       }
 
       Try {
-        $results = Invoke-OktaWebRequest -uri "https://$($oktaTenant)/api/v1/users?activate=true&nextLogin=changePassword" -headers $oktaHeaders -method 'POST' -body ($userOut | ConvertTo-Json)
-        $outObj.FirstName = $results.profile.firstName
-        $outObj.LastName = $results.profile.lastName
-        $outObj.PasswordLink = $userPassURL
-        $outObj.Status = 'Complete'
+        # If SkipActivation flag has not been set for the user...
+        If (!$user.SkipActivation) {
+          # Check if password generation was requested...
+          If ($user.GeneratePassword) {
+            # If so, create user activated with the password generated above, requiring them to reset it on first login
+            $results = Invoke-OktaWebRequest -uri "https://$($oktaTenant)/api/v1/users?activate=true&nextLogin=changePassword" -headers $oktaHeaders -method 'POST' -body ($userOut | ConvertTo-Json)
+          }
+          Else {
+            # Otherwise create them activated and automatically send activation email to user in creation to set their own password
+            $results = Invoke-OktaWebRequest -uri "https://$($oktaTenant)/api/v1/users?activate=true" -headers $oktaHeaders -method 'POST' -body ($userOut | ConvertTo-Json)
+          }
+          
+          If ($user.GeneratePassword) {
+            $outObj.PasswordLink = $userPassURL
+            $outObj.Status = 'Activated with password link'
+          }
+          Else {
+            $outObj.Status = 'Activation mail sent'
+          }
+        }
+        # If SkipActivation has been specified there's no need to set a password, and accounts will just be created with Staged status for later activation
+        Else {
+          $results = Invoke-OktaWebRequest -uri "https://$($oktaTenant)/api/v1/users?activate=false" -headers $oktaHeaders -method 'POST' -body ($userOut | ConvertTo-Json)
+          $outObj.Status = 'Staged'
+        }
       }
+      # If any of the Okta calls return an error, catch it and append the error message to the user in the output file
       Catch {
-        $errorUsers += $userOut
-        $outObj.Status = "ERROR: Failed to build user with message: $($_.Exception.Message)"
+        $outObj.Status = $_.Exception.Message
       }
     }
   }
@@ -265,4 +305,5 @@ $outArr = ForEach ($user in $userArr) {
   $outObj
 }
 
-Export-CSVReport -inputPath $inputFile -inputArr $outArr -reportName 'Results'
+# Export all of the output objects to a CSV file in the same path as the input files
+Export-CSVReport -inputPath $inputFile -inputArr $outArr -reportName 'UserBuildResults'
